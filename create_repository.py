@@ -5,7 +5,8 @@ from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side, numbers
 )
 from openpyxl.utils import get_column_letter
-from config import REPO_FILE, SHEETS
+from compliance_rules import compute_lifecycle_status
+from config import DUE_SOON_DAYS, REPO_FILE, SHEETS
 
 # ─── Style Helpers ────────────────────────────────────────────────────────────
 
@@ -91,48 +92,73 @@ def build_owners_sheet(ws):
     set_col_widths(ws, {"A": 12, "B": 20, "C": 28, "D": 14, "E": 20, "F": 20, "G": 16})
     freeze(ws)
 
+# ─── Demo data, relative to today so statuses and deadlines stay meaningful ───
+
+def d(days):
+    return date.today() + timedelta(days=days)
+
+
 # ─── Sheet: Asset Inventory ───────────────────────────────────────────────────
+
+ASSET_HEADERS = [
+    "Asset ID", "Asset Name", "Asset Type", "Category",
+    "Vendor / Manufacturer", "Model / Version",
+    "Serial / License Number", "Purchase Date",
+    "Expiry / Warranty Date", "Lifecycle Status",
+    "Department", "Location", "Owner ID",
+    "Compliance Status", "Last Audited", "Notes",
+    "Platform (endoflife.date)", "Platform Version",
+]
+
+
+def demo_assets():
+    """Rows without Lifecycle Status; it is computed from the expiry date when the sheet is built."""
+    return [
+        ["HW-001", "Dell Latitude 5540",       "Hardware", "Laptop",         "Dell",        "Latitude 5540",   "SN-DL001", d(-1000), d(60),   "IT",         "HQ-Floor1",   "OWN-001", "Compliant",      d(-40),  "Annual audit done",                     "windows",        "11-23h2-e"],
+        ["HW-002", "HP ProLiant DL380",        "Hardware", "Server",         "HP",          "DL380 Gen10",     "SN-HP002", d(-1600), d(400),  "IT",         "Data Center", "OWN-006", "Compliant",      d(-40),  "Primary app server",                    "windows-server", "2016"],
+        ["HW-003", "Cisco Catalyst 9300",      "Hardware", "Network Device", "Cisco",       "Cat 9300",        "SN-CS003", d(-1500), d(45),   "IT",         "Data Center", "OWN-006", "Pending Review", d(-90),  "Firmware update needed",                "cisco-ios-xe",   "17.3"],
+        ["HW-004", "Dell OptiPlex 7090",       "Hardware", "Desktop",        "Dell",        "OptiPlex 7090",   "SN-DL004", d(-1800), d(-300), "Finance",    "HQ-Floor2",   "OWN-003", "Non-Compliant",  d(-60),  "Warranty expired, needs replacement",   "windows",        "10-22h2"],
+        ["HW-005", "HP LaserJet Pro M404",     "Hardware", "Printer",        "HP",          "M404dn",          "SN-HP005", d(-500),  d(600),  "HR",         "HQ-Floor3",   "OWN-004", "Compliant",      d(-40),  "",                                      "",               ""],
+        ["HW-006", "Lenovo ThinkPad T14",      "Hardware", "Laptop",         "Lenovo",      "ThinkPad T14",    "SN-LN006", d(-700),  d(300),  "Operations", "Remote",      "OWN-005", "Compliant",      d(-40),  "Remote worker device",                  "windows",        "11-24h2-e"],
+        ["HW-007", "Dell PowerEdge R740",      "Hardware", "Server",         "Dell",        "PowerEdge R740",  "SN-DL007", d(-1100), d(900),  "IT",         "Data Center", "OWN-006", "Compliant",      d(-40),  "Database server",                       "ubuntu",         "22.04"],
+        ["HW-008", "Dell PowerEdge R630",      "Hardware", "Server",         "Dell",        "PowerEdge R630",  "SN-DL008", d(-2600), d(-400), "IT",         "Storage",     "OWN-006", "Compliant",      d(-100), "Retired. Disk wipe certificate WC-2291 on file", "",       ""],
+        ["HW-009", "Lenovo ThinkPad X1 (2019)", "Hardware", "Laptop",        "Lenovo",      "X1 Carbon G7",    "SN-LN009", d(-2200), d(-500), "Operations", "Storage",     "OWN-005", "Pending Review", d(-120), "Retired. Returned by leaver, awaiting disposal", "",       ""],
+        ["HW-010", "Apple MacBook Pro 14",     "Hardware", "Laptop",         "Apple",       "MacBook Pro M3",  "SN-AP010", d(-400),  d(330),  "Marketing",  "HQ-Floor2",   "OWN-004", "Compliant",      d(-40),  "Design team",                           "macos",          "14"],
+        ["HW-011", "Legacy ERP App Server",    "Hardware", "Server",         "Dell",        "PowerEdge R720",  "SN-DL011", d(-3000), d(-30),  "Finance",    "Data Center", "OWN-006", "Non-Compliant",  d(-200), "Runs legacy ERP; migration planned",    "rhel",           "7"],
+        ["HW-012", "Jump Host VM",             "Hardware", "Server",         "VMware",      "VM",              "VM-0012",  d(-900),  None,    "IT",         "Data Center", "",        "Pending Review", d(-420), "Owner left the company",                "ubuntu",         "20.04"],
+        ["SW-001", "Microsoft 365 E3",         "Software", "App License",    "Microsoft",   "365 E3",          "LK-MS001", d(-300),  d(150),  "All",        "N/A",         "OWN-001", "Compliant",      d(-40),  "100 seats",                             "",               ""],
+        ["SW-002", "Windows Server 2022 Datacenter", "Software", "OS License", "Microsoft", "Server 2022",     "LK-MS002", d(-1200), d(500),  "IT",         "Data Center", "OWN-006", "Compliant",      d(-40),  "96 cores",                              "windows-server", "2022"],
+        ["SW-003", "CrowdStrike Falcon",       "Software", "Security Tool",  "CrowdStrike", "Falcon Pro",      "LK-CS003", d(-385),  d(-20),  "IT",         "N/A",         "OWN-007", "Non-Compliant",  d(-15),  "License renewal overdue",               "",               ""],
+        ["SW-004", "Jira Software",            "Software", "SaaS Subscription", "Atlassian", "Jira Cloud",     "LK-AT004", d(-550),  d(180),  "IT",         "N/A",         "OWN-001", "Compliant",      d(-40),  "50 users",                              "",               ""],
+        ["SW-005", "AutoCAD 2024",             "Software", "App License",    "Autodesk",    "AutoCAD 2024",    "LK-AD005", d(-425),  d(-60),  "Operations", "N/A",         "OWN-005", "Non-Compliant",  d(-50),  "Not renewed, usage flagged",            "",               ""],
+        ["SW-006", "Adobe Acrobat Pro",        "Software", "App License",    "Adobe",       "Acrobat Pro DC",  "LK-AB006", d(-460),  d(270),  "Finance",    "N/A",         "OWN-003", "Compliant",      d(-40),  "5 seats",                               "",               ""],
+        ["SW-007", "Zoom Business",            "Software", "SaaS Subscription", "Zoom",     "Business Plan",   "LK-ZM007", d(-320),  d(45),   "All",        "N/A",         "OWN-001", "Pending Review", d(-30),  "Renewal review in progress",            "",               ""],
+        ["SW-008", "Salesforce Sales Cloud",   "Software", "SaaS Subscription", "Salesforce", "Enterprise",    "LK-SF008", d(-45),   d(320),  "Sales",      "N/A",         "OWN-003", "Compliant",      d(-40),  "25 users",                              "",               ""],
+    ]
+
 
 def build_assets_sheet(ws):
     ws.sheet_view.showGridLines = False
 
-    headers = [
-        "Asset ID", "Asset Name", "Asset Type", "Category",
-        "Vendor / Manufacturer", "Model / Version",
-        "Serial / License Number", "Purchase Date",
-        "Expiry / Warranty Date", "Lifecycle Status",
-        "Department", "Location", "Owner ID",
-        "Compliance Status", "Last Audited", "Notes"
-    ]
-
+    headers = ASSET_HEADERS
     ws.row_dimensions[1].height = 35
     for i, h in enumerate(headers, 1):
         c = ws.cell(1, i, h)
         style_header(c)
 
     today = date.today()
-    assets = [
-        ["HW-001","Dell Latitude 5540",        "Hardware","Laptop",        "Dell",       "Latitude 5540","SN-DL001-2022", date(2022,3,15), date(2025,3,15), "Near Expiry","IT","HQ-Floor1","OWN-001","Compliant",     date(2025,4,1), "Annual audit done"],
-        ["HW-002","HP ProLiant DL380",          "Hardware","Server",        "HP",         "DL380 Gen10",  "SN-HP002-2021", date(2021,6,1),  date(2026,6,1),  "Active",     "IT","Data Center","OWN-006","Compliant",     date(2025,4,1), "Primary app server"],
-        ["HW-003","Cisco Catalyst 9300",        "Hardware","Network Device","Cisco",      "Cat 9300",     "SN-CS003-2020", date(2020,9,10), date(2025,9,10), "Near Expiry","IT","Data Center","OWN-006","Pending Review",date(2025,3,1), "Firmware update needed"],
-        ["HW-004","Dell OptiPlex 7090",         "Hardware","Desktop",       "Dell",       "OptiPlex 7090","SN-DL004-2021", date(2021,1,20), date(2024,1,20), "Expired",    "Finance","HQ-Floor2","OWN-003","Non-Compliant", date(2025,2,1), "Warranty expired, needs replacement"],
-        ["HW-005","HP LaserJet Pro M404",       "Hardware","Printer",       "HP",         "M404dn",       "SN-HP005-2023", date(2023,7,5),  date(2026,7,5),  "Active",     "HR","HQ-Floor3","OWN-004","Compliant",     date(2025,4,1), ""],
-        ["HW-006","Lenovo ThinkPad T14",        "Hardware","Laptop",        "Lenovo",     "ThinkPad T14", "SN-LN006-2023", date(2023,2,28), date(2026,2,28), "Active",     "Operations","Remote","OWN-005","Compliant",     date(2025,4,1), "Remote worker device"],
-        ["HW-007","Dell PowerEdge R740",        "Hardware","Server",        "Dell",       "PowerEdge R740","SN-DL007-2022",date(2022,11,10),date(2027,11,10),"Active",     "IT","Data Center","OWN-006","Compliant",     date(2025,4,1), "Database server"],
-        ["SW-001","Microsoft 365 E3",           "Software","App License",   "Microsoft",  "365 E3",       "LK-MS001-2024", date(2024,1,1),  date(2025,12,31),"Active",     "All","N/A","OWN-001","Compliant",     date(2025,4,1), "100 seats"],
-        ["SW-002","Windows Server 2022",        "Software","OS License",    "Microsoft",  "Server 2022",  "LK-MS002-2021", date(2021,6,1),  date(2026,6,1),  "Active",     "IT","Data Center","OWN-006","Compliant",     date(2025,4,1), "Datacenter license"],
-        ["SW-003","CrowdStrike Falcon",         "Software","Security Tool", "CrowdStrike","Falcon Pro",   "LK-CS003-2024", date(2024,3,1),  date(2025,3,1),  "Near Expiry","IT","N/A","OWN-007","Non-Compliant", date(2025,3,15),"License renewal overdue"],
-        ["SW-004","Jira Software",              "Software","SaaS Subscription","Atlassian","Jira Cloud",  "LK-AT004-2023", date(2023,5,1),  date(2026,5,1),  "Active",     "IT","N/A","OWN-001","Compliant",     date(2025,4,1), "50 users"],
-        ["SW-005","AutoCAD 2024",               "Software","App License",   "Autodesk",   "AutoCAD 2024", "LK-AD005-2024", date(2024,1,15), date(2025,1,15), "Expired",    "Operations","N/A","OWN-005","Non-Compliant", date(2025,2,1), "Not renewed, usage flagged"],
-        ["SW-006","Adobe Acrobat Pro",          "Software","App License",   "Adobe",      "Acrobat Pro DC","LK-AB006-2023",date(2023,8,1),  date(2026,8,1),  "Active",     "Finance","N/A","OWN-003","Compliant",     date(2025,4,1), "5 seats"],
-        ["SW-007","Zoom Business",              "Software","SaaS Subscription","Zoom",    "Business Plan","LK-ZM007-2024", date(2024,6,1),  today+timedelta(days=45),"Near Expiry","All","N/A","OWN-001","Pending Review",date(2025,3,30),"Renewal review in progress"],
-    ]
+    retired = {"HW-008", "HW-009"}
+    assets = []
+    for row in demo_assets():
+        status = "Retired" if row[0] in retired else compute_lifecycle_status(row[8], today)
+        assets.append(row[:9] + [status] + row[9:])
 
     status_fills = {
         "Active":        GREEN_FILL,
         "Near Expiry":   YELLOW_FILL,
         "Expired":       RED_FILL,
         "Retired":       PatternFill("solid", fgColor="D9D9D9"),
+        "Unknown Expiry": YELLOW_FILL,
         "Compliant":     GREEN_FILL,
         "Non-Compliant": RED_FILL,
         "Pending Review":YELLOW_FILL,
@@ -150,12 +176,12 @@ def build_assets_sheet(ws):
                 cell.fill   = status_fills[val]
                 cell.font   = Font(name="Arial", size=10, bold=True,
                                    color="375623" if "Compliant" in val or val == "Active"
-                                   else ("9C6500" if "Near Expiry" in val or "Pending" in val else "9C0006"))
+                                   else ("9C6500" if val in ("Near Expiry", "Pending Review", "Unknown Expiry") else "9C0006"))
 
     set_col_widths(ws, {
-        "A":10,"B":26,"C":12,"D":18,"E":22,"F":20,
-        "G":22,"H":14,"I":18,"J":15,"K":14,"L":14,
-        "M":10,"N":16,"O":14,"P":30
+        "A":10,"B":28,"C":12,"D":18,"E":22,"F":20,
+        "G":16,"H":14,"I":18,"J":15,"K":14,"L":14,
+        "M":10,"N":16,"O":14,"P":34,"Q":22,"R":14
     })
     freeze(ws)
 
@@ -167,7 +193,7 @@ def build_issues_sheet(ws):
     headers = [
         "Issue ID", "Asset ID", "Issue Description", "Severity",
         "Identified Date", "Remediation Owner", "Due Date",
-        "Status", "Resolution Notes", "Last Updated"
+        "Status", "Resolution Notes", "Last Updated", "ISO 27001 Control"
     ]
 
     ws.row_dimensions[1].height = 35
@@ -175,13 +201,17 @@ def build_issues_sheet(ws):
         c = ws.cell(1, i, h)
         style_header(c)
 
+    # Due date = identified date + remediation SLA for the severity (High 30, Medium 60, Low 90 days)
     issues = [
-        ["ISS-001","HW-004","Warranty expired. Device running without support coverage.","High",   date(2024,1,21),"OWN-003",date(2025,5,30),"Open",        "",                         date(2025,4,1)],
-        ["ISS-002","SW-003","CrowdStrike license not renewed. Endpoint unprotected.",  "High",   date(2025,3,16),"OWN-007",date(2025,4,30),"In Progress", "Renewal PO raised.",       date(2025,4,2)],
-        ["ISS-003","SW-005","AutoCAD used without valid license. Compliance risk.",    "High",   date(2025,2,2), "OWN-005",date(2025,4,15),"In Progress", "Usage suspended pending review.", date(2025,3,20)],
-        ["ISS-004","HW-003","Cisco switch firmware 2 versions behind.",               "Medium", date(2025,3,2), "OWN-006",date(2025,5,15),"Open",        "",                         date(2025,4,1)],
-        ["ISS-005","SW-007","Zoom renewal not actioned. Risk of service disruption.", "Medium", date(2025,3,31),"OWN-001",date(2025,5,10),"Open",        "",                         date(2025,3,31)],
-        ["ISS-006","HW-001","Laptop warranty expires in <90 days. Plan replacement.", "Low",    date(2025,4,1), "OWN-001",date(2025,6,1), "Open",        "",                         date(2025,4,1)],
+        ["ISS-001","HW-004","Warranty expired. Device running without support coverage.",   "High",   d(-70), "OWN-003", d(-40), "Open",        "",                                d(-20), "A.8.1"],
+        ["ISS-002","SW-003","CrowdStrike license not renewed. Endpoints unprotected.",       "High",   d(-18), "OWN-007", d(12),  "In Progress", "Renewal PO raised.",              d(-3),  "A.8.7"],
+        ["ISS-003","SW-005","AutoCAD used without valid license. Compliance risk.",          "High",   d(-55), "OWN-005", d(-25), "In Progress", "Usage suspended pending review.", d(-10), "A.5.32"],
+        ["ISS-004","HW-003","Cisco switch firmware several versions behind.",                "Medium", d(-50), "OWN-006", d(10),  "Open",        "",                                d(-5),  "A.8.9"],
+        ["ISS-005","SW-007","Zoom renewal not actioned. Risk of service disruption.",       "Medium", d(-20), "OWN-001", d(40),  "Open",        "",                                d(-20), "A.5.23"],
+        ["ISS-006","HW-001","Laptop warranty expires in <90 days. Plan replacement.",        "Low",    d(-10), "OWN-001", d(80),  "Open",        "",                                d(-10), "A.8.1"],
+        ["ISS-007","HW-009","Retired laptop has no disk wipe certificate.",                  "Medium", d(-35), "OWN-005", d(25),  "Open",        "",                                d(-35), "A.7.14"],
+        ["ISS-008","SW-001","MFA not enforced for Microsoft 365 admin accounts.",           "High",   d(-90), "OWN-001", d(-60), "Closed",      "Conditional access policy enabled.", d(-65), "A.5.23"],
+        ["ISS-009","HW-006","BitLocker disk encryption not enabled.",                        "Medium", d(-40), "OWN-005", d(20),  "Closed",      "Encryption enabled via Intune.",  d(-2),  "A.8.1"],
     ]
 
     sev_fills  = {"High": RED_FILL, "Medium": YELLOW_FILL, "Low": GREEN_FILL}
@@ -207,10 +237,45 @@ def build_issues_sheet(ws):
                 cell.fill = stat_fills[val]
 
     set_col_widths(ws, {
-        "A":10,"B":10,"C":42,"D":10,
+        "A":10,"B":10,"C":46,"D":10,
         "E":15,"F":20,"G":13,"H":13,
-        "I":36,"J":13
+        "I":36,"J":13,"K":14
     })
+    freeze(ws)
+
+# ─── Sheet: License Entitlements ──────────────────────────────────────────────
+
+def build_licenses_sheet(ws):
+    ws.sheet_view.showGridLines = False
+
+    headers = [
+        "License ID", "Asset ID", "Product", "Vendor", "License Metric",
+        "Seats Purchased", "Seats Assigned", "Annual Cost per Seat (EUR)",
+        "Assignment Source", "Last Reconciled"
+    ]
+    ws.row_dimensions[1].height = 35
+    for i, h in enumerate(headers, 1):
+        style_header(ws.cell(1, i, h))
+
+    licenses = [
+        ["LIC-M365-E3",     "SW-001", "Microsoft 365 E3",                "Microsoft",   "Per user",   100, 87,  432,  "Entra ID license group",  d(-7)],
+        ["LIC-WINSRV-DC",   "SW-002", "Windows Server 2022 Datacenter",  "Microsoft",   "Per 16-core pack", 6, 6, 1500, "Hyper-V host inventory",  d(-30)],
+        ["LIC-FALCON",      "SW-003", "CrowdStrike Falcon Pro",          "CrowdStrike", "Per device", 120, 131, 60,   "Falcon console sensors", d(-7)],
+        ["LIC-JIRA",        "SW-004", "Jira Software Cloud",             "Atlassian",   "Per user",   50,  34,  92,   "Atlassian admin",        d(-14)],
+        ["LIC-AUTOCAD",     "SW-005", "AutoCAD 2024",                    "Autodesk",    "Per user",   3,   5,   2100, "Software inventory (Intune)", d(-14)],
+        ["LIC-ACROBAT",     "SW-006", "Adobe Acrobat Pro",               "Adobe",       "Per user",   5,   5,   240,  "Adobe Admin Console",    d(-30)],
+        ["LIC-ZOOM",        "SW-007", "Zoom Business",                   "Zoom",        "Per host",   40,  22,  200,  "Zoom admin",             d(-14)],
+        ["LIC-SALESFORCE",  "SW-008", "Salesforce Sales Cloud",          "Salesforce",  "Per user",   25,  24,  1980, "Salesforce setup",       d(-7)],
+    ]
+    for r, row in enumerate(licenses, 2):
+        ws.row_dimensions[r].height = 22
+        for c, val in enumerate(row, 1):
+            cell = ws.cell(r, c, val)
+            style_row(cell, alt=(r % 2 == 0))
+            if isinstance(val, date):
+                cell.number_format = "DD-MMM-YYYY"
+
+    set_col_widths(ws, {"A": 18, "B": 10, "C": 32, "D": 14, "E": 18, "F": 12, "G": 12, "H": 16, "I": 26, "J": 14})
     freeze(ws)
 
 # ─── Sheet: Audit Log ─────────────────────────────────────────────────────────
@@ -230,16 +295,14 @@ def build_audit_log_sheet(ws):
         style_header(c)
 
     log = [
-        ["AUD-001", date(2025,2,3),  "Weekly",  12, 9, 2, 1, 4, 2, "generate_reports.py"],
-        ["AUD-002", date(2025,2,10), "Weekly",  12, 9, 2, 1, 4, 2, "generate_reports.py"],
-        ["AUD-003", date(2025,2,17), "Weekly",  13, 9, 2, 2, 5, 2, "generate_reports.py"],
-        ["AUD-004", date(2025,2,24), "Weekly",  13, 9, 3, 1, 5, 3, "generate_reports.py"],
-        ["AUD-005", date(2025,3,1),  "Monthly", 13, 9, 3, 1, 5, 3, "generate_reports.py"],
-        ["AUD-006", date(2025,3,3),  "Weekly",  14, 10,3, 1, 5, 3, "generate_reports.py"],
-        ["AUD-007", date(2025,3,10), "Weekly",  14, 10,3, 1, 5, 3, "generate_reports.py"],
-        ["AUD-008", date(2025,3,17), "Weekly",  14, 10,3, 1, 6, 3, "generate_reports.py"],
-        ["AUD-009", date(2025,3,24), "Weekly",  14, 10,3, 1, 6, 3, "generate_reports.py"],
-        ["AUD-010", date(2025,4,1),  "Monthly", 14, 9, 3, 2, 6, 3, "generate_reports.py"],
+        ["AUD-001", d(-63), "Weekly",  17, 12, 3, 2, 5, 3, "generate_reports.py"],
+        ["AUD-002", d(-56), "Weekly",  17, 12, 3, 2, 6, 3, "generate_reports.py"],
+        ["AUD-003", d(-49), "Weekly",  18, 12, 3, 3, 6, 3, "generate_reports.py"],
+        ["AUD-004", d(-42), "Weekly",  18, 13, 3, 2, 7, 4, "generate_reports.py"],
+        ["AUD-005", d(-35), "Monthly", 18, 13, 3, 2, 7, 4, "generate_reports.py"],
+        ["AUD-006", d(-28), "Weekly",  19, 13, 3, 3, 7, 3, "generate_reports.py"],
+        ["AUD-007", d(-21), "Weekly",  19, 13, 4, 2, 7, 3, "generate_reports.py"],
+        ["AUD-008", d(-14), "Weekly",  20, 13, 4, 3, 7, 3, "generate_reports.py"],
     ]
 
     type_fills = {
@@ -278,7 +341,7 @@ def build_dashboard_sheet(ws):
     ws.row_dimensions[1].height = 36
 
     ws.merge_cells("A2:H2")
-    ws["A2"].value = f"Last Refreshed: {date.today().strftime('%d %b %Y')}  |  Run generate_reports.py to update"
+    ws["A2"].value = "Live formulas: counts recalculate from the sheets and today's date whenever the workbook opens"
     ws["A2"].font  = Font(name="Arial", italic=True, size=10, color="595959")
     ws["A2"].alignment = CENTER
     ws["A2"].fill  = PatternFill("solid", fgColor="F2F2F2")
@@ -291,26 +354,23 @@ def build_dashboard_sheet(ws):
     ws["A4"].alignment = CENTER
     ws.row_dimensions[4].height = 26
 
+    # Lifecycle counts are computed from the expiry dates (column I) and TODAY(),
+    # so they stay correct without re-running any script. Retired assets (column J) are excluded.
+    inv = "Asset_Inventory!"
+    not_retired = f'{inv}J2:J1000,"<>Retired"'
+    pct = lambda r: f'=IF($B$6=0,"",TEXT(B{r}/$B$6,"0%"))'   # always relative to Total Assets (B6)
+
     kpi_headers = ["Metric", "Count", "% of Total", "Status"]
     kpi_data = [
-        ["Total Assets",           "=COUNTA(Asset_Inventory!A2:A1000)",
-         "100%", ""],
-        ["Hardware Assets",        "=COUNTIF(Asset_Inventory!C2:C1000,\"Hardware\")",
-         '=IF(B6=0,"",TEXT(B7/B6,"0%"))', ""],
-        ["Software Assets",        "=COUNTIF(Asset_Inventory!C2:C1000,\"Software\")",
-         '=IF(B5=0,"",TEXT(B8/B6,"0%"))', ""],
-        ["Compliant",              "=COUNTIF(Asset_Inventory!N2:N1000,\"Compliant\")",
-         '=IF(B5=0,"",TEXT(B9/B6,"0%"))', "✅ Good"],
-        ["Non-Compliant",          "=COUNTIF(Asset_Inventory!N2:N1000,\"Non-Compliant\")",
-         '=IF(B5=0,"",TEXT(B10/B6,"0%"))', "🔴 Action Needed"],
-        ["Pending Review",         "=COUNTIF(Asset_Inventory!N2:N1000,\"Pending Review\")",
-         '=IF(B5=0,"",TEXT(B11/B6,"0%"))', "🟡 Review Due"],
-        ["Active Assets",          "=COUNTIF(Asset_Inventory!J2:J1000,\"Active\")",
-         '=IF(B5=0,"",TEXT(B12/B6,"0%"))', ""],
-        ["Near Expiry (<90 days)", "=COUNTIF(Asset_Inventory!J2:J1000,\"Near Expiry\")",
-         '=IF(B5=0,"",TEXT(B13/B6,"0%"))', "🟡 Plan Renewal"],
-        ["Expired",                "=COUNTIF(Asset_Inventory!J2:J1000,\"Expired\")",
-         '=IF(B5=0,"",TEXT(B14/B6,"0%"))', "🔴 Immediate Action"],
+        ["Total Assets",           f"=COUNTA({inv}A2:A1000)", "100%", ""],
+        ["Hardware Assets",        f'=COUNTIF({inv}C2:C1000,"Hardware")', pct(7), ""],
+        ["Software Assets",        f'=COUNTIF({inv}C2:C1000,"Software")', pct(8), ""],
+        ["Compliant",              f'=COUNTIF({inv}N2:N1000,"Compliant")', pct(9), "✅ Good"],
+        ["Non-Compliant",          f'=COUNTIF({inv}N2:N1000,"Non-Compliant")', pct(10), "🔴 Action Needed"],
+        ["Pending Review",         f'=COUNTIF({inv}N2:N1000,"Pending Review")', pct(11), "🟡 Review Due"],
+        ["Active (> 90 days)",     f'=COUNTIFS({inv}I2:I1000,">"&(TODAY()+90),{not_retired})', pct(12), ""],
+        ["Near Expiry (<= 90 days)", f'=COUNTIFS({inv}I2:I1000,">="&TODAY(),{inv}I2:I1000,"<="&(TODAY()+90),{not_retired})', pct(13), "🟡 Plan Renewal"],
+        ["Expired",                f'=COUNTIFS({inv}I2:I1000,"<"&TODAY(),{not_retired})', pct(14), "🔴 Immediate Action"],
     ]
 
     ws.row_dimensions[5].height = 24
@@ -326,9 +386,9 @@ def build_dashboard_sheet(ws):
         "🔴 Immediate Action": RED_FILL,
     }
 
-    for r, (metric, formula, pct, status) in enumerate(kpi_data, 6):
+    for r, (metric, formula, pct_formula, status) in enumerate(kpi_data, 6):
         ws.row_dimensions[r].height = 22
-        for c, val in enumerate([metric, formula, pct, status], 1):
+        for c, val in enumerate([metric, formula, pct_formula, status], 1):
             cell = ws.cell(r, c, val)
             style_row(cell, alt=(r % 2 == 0))
             if c == 4 and val in status_map:
@@ -344,16 +404,21 @@ def build_dashboard_sheet(ws):
     ws[f"A{row_start}"].alignment = CENTER
     ws.row_dimensions[row_start].height = 26
 
-    iss_headers = ["Severity", "Count", "Due Soon (<14 days)", "Overdue"]
+    iss_headers = ["Severity", "Open", f"Due Soon (<= {DUE_SOON_DAYS} days)", "Overdue"]
     for i, h in enumerate(iss_headers, 1):
         c = ws.cell(row_start + 1, i, h)
         style_subheader(c)
 
-    iss_data = [
-        ["High",   '=COUNTIFS(Compliance_Issues!D2:D1000,"High",Compliance_Issues!H2:H1000,"<>Closed")', "", ""],
-        ["Medium", '=COUNTIFS(Compliance_Issues!D2:D1000,"Medium",Compliance_Issues!H2:H1000,"<>Closed")', "", ""],
-        ["Low",    '=COUNTIFS(Compliance_Issues!D2:D1000,"Low",Compliance_Issues!H2:H1000,"<>Closed")', "", ""],
-    ]
+    iss = "Compliance_Issues!"
+    def counts(sev):
+        open_ = f'{iss}D2:D1000,"{sev}",{iss}H2:H1000,"<>Closed"'
+        return [
+            sev,
+            f"=COUNTIFS({open_})",
+            f'=COUNTIFS({open_},{iss}G2:G1000,">="&TODAY(),{iss}G2:G1000,"<="&(TODAY()+{DUE_SOON_DAYS}))',
+            f'=COUNTIFS({open_},{iss}G2:G1000,"<"&TODAY())',
+        ]
+    iss_data = [counts("High"), counts("Medium"), counts("Low")]
     sev_f_map = {"High": RED_FILL, "Medium": YELLOW_FILL, "Low": GREEN_FILL}
 
     for i, row in enumerate(iss_data, row_start + 2):
@@ -378,6 +443,7 @@ def create_repository():
         (SHEETS["assets"],    build_assets_sheet),
         (SHEETS["owners"],    build_owners_sheet),
         (SHEETS["issues"],    build_issues_sheet),
+        (SHEETS["licenses"],  build_licenses_sheet),
         (SHEETS["audit_log"], build_audit_log_sheet),
     ]
 
@@ -390,4 +456,11 @@ def create_repository():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Create the demo asset repository workbook")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing repository")
+    args = parser.parse_args()
+    if os.path.exists(REPO_FILE) and not args.force:
+        raise SystemExit(f"{REPO_FILE} already exists. Use --force to overwrite it with demo data.")
     create_repository()

@@ -10,11 +10,13 @@ Usage:
 """
 
 import argparse
-from datetime import date, timedelta
+import sys
+from datetime import date
 
 import pandas as pd
 from openpyxl import load_workbook
 
+from compliance_rules import add_deadline_state, refresh_lifecycle
 from config import REPO_FILE, SHEETS, NEAR_EXPIRY_DAYS
 
 
@@ -25,36 +27,22 @@ def load_assets():
     return df
 
 
-def compute_lifecycle_status(expiry_date, today):
-    if pd.isna(expiry_date) or expiry_date is None:
-        return "Active"
-    if expiry_date < today:
-        return "Expired"
-    if expiry_date <= today + timedelta(days=NEAR_EXPIRY_DAYS):
-        return "Near Expiry"
-    return "Active"
-
-
 def run_check(update=False):
-    today  = date.today()
-    assets = load_assets()
+    today   = date.today()
+    stored  = load_assets()
+    assets  = refresh_lifecycle(stored, today)     # statuses as of today, not as last saved
+    issues  = add_deadline_state(pd.read_excel(REPO_FILE, sheet_name=SHEETS["issues"]), today)
 
     changed = []
-    for idx, row in assets.iterrows():
-        expiry     = row.get("Expiry / Warranty Date")
-        current    = str(row.get("Lifecycle Status", "")).strip()
-        computed   = compute_lifecycle_status(expiry, today)
-
-        if computed != current and current != "Retired":
+    for (_, old), (_, new) in zip(stored.iterrows(), assets.iterrows()):
+        if str(old.get("Lifecycle Status", "")).strip() != new["Lifecycle Status"]:
             changed.append({
-                "Asset ID":    row.get("Asset ID"),
-                "Asset Name":  row.get("Asset Name"),
-                "Old Status":  current,
-                "New Status":  computed,
-                "Expiry Date": expiry,
+                "Asset ID":    new["Asset ID"],
+                "Asset Name":  new["Asset Name"],
+                "Old Status":  str(old.get("Lifecycle Status", "")).strip(),
+                "New Status":  new["Lifecycle Status"],
+                "Expiry Date": new["Expiry / Warranty Date"],
             })
-            if update:
-                assets.at[idx, "Lifecycle Status"] = computed
 
     # ── Print Summary ────────────────────────────────────────────────────────
     print("\n" + "="*60)
@@ -64,14 +52,26 @@ def run_check(update=False):
     total    = len(assets)
     expired  = assets[assets["Lifecycle Status"] == "Expired"]
     near_exp = assets[assets["Lifecycle Status"] == "Near Expiry"]
+    unknown  = assets[assets["Lifecycle Status"] == "Unknown Expiry"]
     non_comp = assets[assets["Compliance Status"] == "Non-Compliant"]
     pending  = assets[assets["Compliance Status"] == "Pending Review"]
+    overdue  = issues[issues["Deadline State"] == "Overdue"].sort_values("Days Overdue", ascending=False)
+    due_soon = issues[issues["Deadline State"] == "Due Soon"]
 
     print(f"\n  Total Assets      : {total}")
     print(f"  Expired           : {len(expired)}")
     print(f"  Near Expiry       : {len(near_exp)}")
+    print(f"  Unknown Expiry    : {len(unknown)}")
     print(f"  Non-Compliant     : {len(non_comp)}")
     print(f"  Pending Review    : {len(pending)}")
+    print(f"  Overdue Issues    : {len(overdue)}")
+    print(f"  Issues Due Soon   : {len(due_soon)}")
+
+    if overdue.shape[0]:
+        print("\n  ── OVERDUE REMEDIATION ──────────────────────────────")
+        for _, r in overdue.iterrows():
+            print(f"  [{r['Issue ID']}] {r['Severity']:<6} {r['Days Overdue']:>3} days overdue  |  "
+                  f"{r['Asset ID']}  |  owner {r['Remediation Owner']}")
 
     if expired.shape[0]:
         print("\n  ── EXPIRED ASSETS ──────────────────────────────────")
@@ -127,6 +127,7 @@ def _write_lifecycle_updates(updated_df):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")   # box-drawing characters crash cp1252 Windows consoles
     parser = argparse.ArgumentParser()
     parser.add_argument("--update", action="store_true", help="Write status changes back to the repo")
     args = parser.parse_args()

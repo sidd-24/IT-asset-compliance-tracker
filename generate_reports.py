@@ -18,6 +18,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from compliance_rules import add_deadline_state, refresh_lifecycle, same_month
 from config import REPO_FILE, SHEETS, REPORTS_FOLDER, NEAR_EXPIRY_DAYS
 
 # ─── Styles ───────────────────────────────────────────────────────────────────
@@ -65,10 +66,11 @@ def set_widths(ws, widths):
 
 # ─── Load Data ────────────────────────────────────────────────────────────────
 
-def load_data():
+def load_data(today=None):
+    """Assets with lifecycle status recomputed for today, and issues with their deadline state."""
+    today  = today or date.today()
     assets = pd.read_excel(REPO_FILE, sheet_name=SHEETS["assets"])
     issues = pd.read_excel(REPO_FILE, sheet_name=SHEETS["issues"])
-    owners = pd.read_excel(REPO_FILE, sheet_name=SHEETS["owners"])
 
     date_cols_a = ["Purchase Date", "Expiry / Warranty Date", "Last Audited"]
     date_cols_i = ["Identified Date", "Due Date", "Last Updated"]
@@ -81,7 +83,7 @@ def load_data():
         if col in issues.columns:
             issues[col] = pd.to_datetime(issues[col], errors="coerce").dt.date
 
-    return assets, issues, owners
+    return refresh_lifecycle(assets, today), add_deadline_state(issues, today)
 
 
 # ─── Shared Helpers ───────────────────────────────────────────────────────────
@@ -177,6 +179,7 @@ def build_weekly_report(wb, assets, issues, today):
         ("Near Expiry (< 90 days)", len(near_expiry),                   "Plan renewal"),
         ("Expired",                 len(expired),                       "Action overdue"),
         ("Open Issues",             len(open_issues),                   ""),
+        ("Overdue Remediation",     len(open_issues[open_issues["Deadline State"] == "Overdue"]), "Past the remediation deadline"),
         ("High Severity Open",      high_open,                          "Escalate if not actioned"),
     ]
 
@@ -203,7 +206,7 @@ def build_weekly_report(wb, assets, issues, today):
     row += 1
 
     iss_cols = ["Issue ID", "Asset ID", "Issue Description", "Severity",
-                "Remediation Owner", "Due Date", "Status"]
+                "Remediation Owner", "Due Date", "Status", "Deadline State"]
 
     ws.row_dimensions[row].height = 30
     for i, col in enumerate(iss_cols, 1):
@@ -225,6 +228,8 @@ def build_weekly_report(wb, assets, issues, today):
                 cell.fill = get_severity_fill(str(val))
             if col == "Status" and str(val) == "Open":
                 cell.fill = RED_FILL
+            if col == "Deadline State":
+                cell.fill = {"Overdue": RED_FILL, "Due Soon": YELLOW_FILL, "On Track": GREEN_FILL}.get(str(val), cell.fill)
         row += 1
 
     row += 2
@@ -353,10 +358,10 @@ def build_monthly_report(wb, assets, issues, today):
 
     closed_this_month = issues[
         (issues["Status"] == "Closed") &
-        (issues["Last Updated"].apply(lambda d: d.month == today.month if isinstance(d, date) else False))
+        (issues["Last Updated"].apply(lambda d: same_month(d, today)))
     ]
     new_this_month = issues[
-        issues["Identified Date"].apply(lambda d: d.month == today.month if isinstance(d, date) else False)
+        issues["Identified Date"].apply(lambda d: same_month(d, today))
     ]
 
     stats = [
@@ -368,6 +373,7 @@ def build_monthly_report(wb, assets, issues, today):
         ("Issues Closed This Month",  len(closed_this_month)),
         ("Issues Still Open",         len(issues[issues["Status"] != "Closed"])),
         ("High Severity Open",        len(issues[(issues["Severity"] == "High") & (issues["Status"] != "Closed")])),
+        ("Overdue Remediation",       len(issues[issues["Deadline State"] == "Overdue"])),
     ]
 
     ws.cell(row, 1, "Metric").font  = WHITE_BOLD
@@ -420,7 +426,7 @@ def update_audit_log(assets, issues, audit_type, today):
 def generate_reports(report_type="both"):
     os.makedirs(REPORTS_FOLDER, exist_ok=True)
     today  = date.today()
-    assets, issues, owners = load_data()
+    assets, issues = load_data(today)
 
     if report_type in ("weekly", "both"):
         wb   = Workbook()
@@ -437,8 +443,7 @@ def generate_reports(report_type="both"):
         build_monthly_report(wb, assets, issues, today)
         fname = os.path.join(REPORTS_FOLDER, f"Monthly_Audit_{today.strftime('%Y-%m')}.xlsx")
         wb.save(fname)
-        if report_type == "monthly":
-            update_audit_log(assets, issues, "Monthly", today)
+        update_audit_log(assets, issues, "Monthly", today)   # previously skipped when running "both"
         print(f"Monthly report saved: {fname}")
 
 
